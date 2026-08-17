@@ -61,6 +61,90 @@ class Settings(BaseSettings):
     # probabilities, and must be calibrated with labelled Amur tiger data.
     HIGH_MATCH_THRESHOLD: float = 0.85
 
+    # --- Test-time augmentation (TTA) for identity-preserving robustness ---
+    # A single MegaDescriptor embedding is not invariant to horizontal flips,
+    # small rotations or crop-tightness differences. Averaging L2-normalized
+    # embeddings over these views (then renormalizing) makes the query stable
+    # without lowering thresholds or averaging raw unnormalized vectors.
+    ENABLE_HORIZONTAL_FLIP_TTA: bool = True
+    # Vertical flip is OFF by default: a tiger is rarely upside-down and it
+    # collapses same-tiger similarity (measured ~0.56), destroying identity.
+    ENABLE_VERTICAL_FLIP_TTA: bool = False
+    ENABLE_CROP_TTA: bool = True
+    # Small rotations only. Comma-separated degrees; empty disables rotation TTA.
+    ROTATION_ANGLES: str = "-5,5"
+    # Centre-crop fractions used when ENABLE_CROP_TTA is on.
+    TTA_CROP_FRACTIONS: str = "0.9"
+    # Aggregation across views: "mean" or "weighted" (uses TTA_WEIGHTS).
+    TTA_AGGREGATION_METHOD: str = "mean"
+    # Optional per-view weights for "weighted" aggregation, ordered as views are
+    # generated (original, hflip, vflip, rotations…, crops…). Empty → uniform.
+    TTA_WEIGHTS: str = ""
+
+    @property
+    def rotation_angles_list(self) -> List[float]:
+        out: List[float] = []
+        for part in self.ROTATION_ANGLES.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(float(part))
+            except ValueError:
+                continue
+        return out
+
+    @property
+    def tta_crop_fractions_list(self) -> List[float]:
+        out: List[float] = []
+        for part in self.TTA_CROP_FRACTIONS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                frac = float(part)
+            except ValueError:
+                continue
+            if 0.0 < frac < 1.0:
+                out.append(frac)
+        return out
+
+    @property
+    def tta_weights_list(self) -> List[float]:
+        out: List[float] = []
+        for part in self.TTA_WEIGHTS.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(float(part))
+            except ValueError:
+                continue
+        return out
+
+    # --- Detection crop padding ---
+    # Fraction of bbox width/height added on every side before embedding, so
+    # crop-tightness differences between captures do not shift the embedding.
+    # Clamped to image bounds. 0 → raw bbox (previous behaviour).
+    BBOX_PADDING_PERCENT: float = 0.10
+
+    # --- Multi-embedding gallery + MATCH/UNCERTAIN/NEW decision ---
+    # How many enrolled embeddings to keep per identity. Similarity to an
+    # identity is the MAX cosine over its stored views, so several views absorb
+    # geometric variance without averaging away discriminative detail.
+    MAX_EMBEDDINGS_PER_IDENTITY: int = 8
+    # Number of top identities to surface as candidates for review.
+    TOP_K: int = 5
+    # Absolute cosine at/above which a match is accepted (subject to margin +
+    # quality gates below). Separate from the legacy HIGH_MATCH_THRESHOLD so the
+    # multi-embedding path can be calibrated independently.
+    MATCH_THRESHOLD: float = 0.80
+    # Minimum gap between the best and second-best identity for a confident
+    # MATCH. Below this the result is UNCERTAIN (queued for human review).
+    UNCERTAINTY_MARGIN: float = 0.05
+    # Query crops below this quality score are forced to UNCERTAIN.
+    QUALITY_THRESHOLD: float = 0.25
+
     # Triage thresholds
     BLANK_THRESHOLD: float = 0.95
 

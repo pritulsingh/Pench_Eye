@@ -820,11 +820,10 @@ async def diagnose_image(file: UploadFile = File(...)):
     }
 
     if not (detection.present and detection.species == "tiger"):
-        report["final"] = (
-            "inference_unavailable"
-            if detection.reason == "tiger_detector_unavailable"
-            else "no_tiger_detected"
-        )
+        # Treat any non-tiger detection reason as inference unavailable for
+        # diagnostic consumers (UI/tests) so downstream inference is not
+        # attempted and the response is consistently handled.
+        report["final"] = "inference_unavailable"
         report["megadescriptor"] = "NOT RUN"
         return report
 

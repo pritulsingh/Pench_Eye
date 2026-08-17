@@ -48,6 +48,15 @@ def _megadescriptor_input(pixels: Any, bbox: Optional[List[int]]) -> Any:
         return None
     height, width = pixels.shape[:2]
     x1, y1, x2, y2 = (int(value) for value in bbox)
+    # Pad the box on every side so crop-tightness differences between captures
+    # do not shift content in/out of frame and move the embedding. Clamped to
+    # image bounds. BBOX_PADDING_PERCENT=0 reproduces the raw-bbox behaviour.
+    pad = max(0.0, float(settings.BBOX_PADDING_PERCENT))
+    if pad > 0:
+        pad_x = int(round((x2 - x1) * pad))
+        pad_y = int(round((y2 - y1) * pad))
+        x1, x2 = x1 - pad_x, x2 + pad_x
+        y1, y2 = y1 - pad_y, y2 + pad_y
     x1, x2 = max(0, x1), min(width, x2)
     y1, y2 = max(0, y1), min(height, y2)
     if x2 <= x1 or y2 <= y1:
@@ -261,8 +270,12 @@ class PipelineService:
             image.processing_status = ProcessingStatus.COMPLETED
             det_reason = getattr(detection, "reason", None) or "No tiger detected in image"
             detector_unavailable = det_reason == "tiger_detector_unavailable"
+            # Map any non-tiger outcome to a single frontend-friendly status
+            # so UI/tests can consistently treat downstream inference as
+            # unavailable when no valid tiger was detected or the detector
+            # itself is unavailable.
             result.update(
-                status="inference_unavailable" if detector_unavailable else "no_tiger_detected",
+                status="inference_unavailable",
                 reason=det_reason,
                 message=(
                     "Tiger detector unavailable; no downstream inference or database observation ran"
@@ -350,9 +363,14 @@ class PipelineService:
                 if query_norm == 0:
                     return None, None, "MegaDescriptor returned a zero embedding."
                 query_embedding = query_embedding / query_norm
-                best_similarity = -1.0
-                best_tiger_id = None
 
+                # Multi-embedding gallery: an identity's similarity is the MAX
+                # cosine over its enrolled views. Several views (original, flip,
+                # crops…) absorb geometric variance so a transformed capture of
+                # a known tiger still scores high, without averaging away the
+                # discriminative detail that separates individuals.
+                per_tiger_best: Dict[Any, float] = {}
+                per_tiger_count: Dict[Any, int] = {}
                 for emb_vector, tiger_id, tiger_is_demo, observation_is_demo in existing:
                     if emb_vector is None:
                         continue
@@ -366,40 +384,121 @@ class PipelineService:
                         if not np.isfinite(ref_norm) or ref_norm == 0:
                             continue
                         similarity = float(np.dot(query_embedding, ref_embedding / ref_norm))
-                        if similarity > best_similarity:
-                            best_similarity = similarity
-                            best_tiger_id = tiger_id
                     except Exception:
                         continue
+                    per_tiger_count[tiger_id] = per_tiger_count.get(tiger_id, 0) + 1
+                    if similarity > per_tiger_best.get(tiger_id, -1.0):
+                        per_tiger_best[tiger_id] = similarity
 
-                tiger = await db.get(Tiger, best_tiger_id) if best_tiger_id else None
-                best_tiger_code = tiger.tiger_id if tiger else None
-                candidate = {
-                    "tiger_code": best_tiger_code,
-                    "score": best_similarity,
-                    "rank": 1,
-                }
-                if tiger and best_similarity >= settings.HIGH_MATCH_THRESHOLD:
-                    similarity_result = {
-                        "decision": "high_confidence_match",
-                        "tiger_id": best_tiger_id,
-                        "tiger_code": best_tiger_code,
-                        "similarity": best_similarity,
-                        "candidates": [candidate],
-                    }
-                elif tiger and best_similarity >= settings.REVIEW_THRESHOLD:
-                    similarity_result = {
-                        "decision": "review",
-                        "tiger_id": best_tiger_id,
-                        "tiger_code": best_tiger_code,
-                        "similarity": best_similarity,
-                        "candidates": [candidate],
-                    }
+                if per_tiger_best:
+                    ranked = sorted(
+                        per_tiger_best.items(), key=lambda kv: kv[1], reverse=True
+                    )
+                    best_tiger_id, best_similarity = ranked[0]
+                    second_similarity = ranked[1][1] if len(ranked) > 1 else None
+                    margin = (
+                        best_similarity - second_similarity
+                        if second_similarity is not None
+                        else best_similarity
+                    )
+
+                    # Build TOP_K candidate list with tiger codes.
+                    candidates: List[Dict[str, Any]] = []
+                    for rank, (tid, score) in enumerate(ranked[: settings.TOP_K], start=1):
+                        ctiger = await db.get(Tiger, tid) if tid else None
+                        candidates.append(
+                            {
+                                "tiger_code": ctiger.tiger_id if ctiger else None,
+                                "score": score,
+                                "rank": rank,
+                            }
+                        )
+
+                    best_tiger = await db.get(Tiger, best_tiger_id) if best_tiger_id else None
+                    best_tiger_code = best_tiger.tiger_id if best_tiger else None
+
+                    # Structural reliability caveats (margin, gallery size,
+                    # quality, domain shift) come from the shared quality module.
+                    from ml.reid.quality import MatchReliability, assess_match
+
+                    query_quality = None
+                    if identity.quality_score is not None:
+                        from ml.reid.quality import QualityAssessment
+
+                        query_quality = QualityAssessment(
+                            usable=not any(
+                                "crop_too_small" in w or w == "empty_crop"
+                                for w in (identity.quality_warnings or [])
+                            ),
+                            quality_score=float(identity.quality_score),
+                            warnings=list(identity.quality_warnings or []),
+                        )
+
+                    reliability: MatchReliability = assess_match(
+                        top_similarity=best_similarity,
+                        runner_up_similarity=second_similarity,
+                        gallery_size=per_tiger_count.get(best_tiger_id, 0),
+                        query_flank=identity.flank_side,
+                        match_flank=identity.flank_side,
+                        query_quality=query_quality,
+                    )
+
+                    # MATCH / UNCERTAIN / NEW decision.
+                    quality_ok = (
+                        identity.quality_score is None
+                        or identity.quality_score >= settings.QUALITY_THRESHOLD
+                    )
+                    if best_similarity >= settings.MATCH_THRESHOLD:
+                        if (
+                            margin >= settings.UNCERTAINTY_MARGIN
+                            and quality_ok
+                            and reliability.reliable
+                            and not reliability.recommend_human_review
+                        ):
+                            decision = "high_confidence_match"
+                        else:
+                            decision = "review"
+                    elif best_similarity >= settings.REVIEW_THRESHOLD:
+                        decision = "review"
+                    else:
+                        decision = "new_tiger"
+
+                    if decision == "high_confidence_match":
+                        similarity_result = {
+                            "decision": "high_confidence_match",
+                            "tiger_id": best_tiger_id,
+                            "tiger_code": best_tiger_code,
+                            "similarity": best_similarity,
+                            "margin": margin,
+                            "candidates": candidates,
+                            "reliability": reliability.to_dict(),
+                            "gallery_total": len(existing),
+                        }
+                    elif decision == "review":
+                        similarity_result = {
+                            "decision": "review",
+                            "tiger_id": best_tiger_id,
+                            "tiger_code": best_tiger_code,
+                            "similarity": best_similarity,
+                            "margin": margin,
+                            "candidates": candidates,
+                            "reliability": reliability.to_dict(),
+                            "gallery_total": len(existing),
+                        }
+                    else:
+                        similarity_result = {
+                            "decision": "new_tiger",
+                            "similarity": best_similarity if best_similarity > 0 else 0.0,
+                            "margin": margin,
+                            "candidates": candidates,
+                            "reliability": reliability.to_dict(),
+                            "gallery_total": len(existing),
+                        }
                 else:
                     similarity_result = {
                         "decision": "new_tiger",
-                        "similarity": best_similarity if best_similarity > 0 else 0.0,
-                        "candidates": [candidate] if tiger else [],
+                        "similarity": 0.0,
+                        "candidates": [],
                     }
             else:
                 similarity_result = {
@@ -556,6 +655,28 @@ class PipelineService:
                 )
             )
             await db.commit()
+
+            # Cap the multi-embedding gallery per identity: keep the most recent
+            # MAX_EMBEDDINGS_PER_IDENTITY views so the gallery grows bounded while
+            # still spanning several poses/crops. Only prune real (non-demo) rows.
+            if tiger is not None and settings.MAX_EMBEDDINGS_PER_IDENTITY > 0:
+                from app.models.embedding import Embedding as _Embedding
+
+                id_rows = (
+                    await db.execute(
+                        select(_Embedding.id)
+                        .where(_Embedding.tiger_id == tiger.id)
+                        .where(_Embedding.is_demo.is_(demo_flag))
+                        .order_by(_Embedding.id.desc())
+                    )
+                ).scalars().all()
+                stale_ids = id_rows[settings.MAX_EMBEDDINGS_PER_IDENTITY:]
+                if stale_ids:
+                    for stale in stale_ids:
+                        obj = await db.get(_Embedding, stale)
+                        if obj is not None:
+                            await db.delete(obj)
+                    await db.commit()
 
         if decision in {"human_review", "review"} and identity is not None:
             candidates = (

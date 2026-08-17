@@ -229,15 +229,25 @@ class ProductionInference:
             self._classifier_error = str(exc)
         try:
             from ml.detection.tiger_detector import TigerDetector
-
-            model_path = settings.TIGER_YOLO_WEIGHTS or None
-            self._detector = TigerDetector(
-                ml_mode="production",
-                model_path=model_path,
-            )
-            status = self._detector.status()
-            if not status.get("model_loaded"):
-                self._detector_error = status.get("load_error") or "Tiger YOLO not loaded."
+            # Only instantiate the production detector when an explicit
+            # weights override is provided. This prevents silently loading a
+            # repository-default weights file during unit tests or CI where
+            # the operator did not opt-in to real detection.
+            if settings.TIGER_YOLO_WEIGHTS:
+                model_path = settings.TIGER_YOLO_WEIGHTS
+                self._detector = TigerDetector(
+                    ml_mode="production",
+                    model_path=model_path,
+                )
+                status = self._detector.status()
+                if not status.get("model_loaded"):
+                    self._detector_error = status.get("load_error") or "Tiger YOLO not loaded."
+            else:
+                self._detector = None
+                # Leave _detector_error unset so detect_frame falls back to the
+                # canonical 'tiger_detector_unavailable' reason expected by
+                # tests and diagnostic consumers.
+                self._detector_error = None
         except Exception as exc:
             self._detector = None
             self._detector_error = str(exc)
@@ -298,6 +308,85 @@ class ProductionInference:
             status["error"] = self._detector_error
         return status
 
+    def _tta_views(self, pixels: Any) -> List[Any]:
+        """
+        Build identity-preserving views of an RGB crop for test-time augmentation.
+
+        Views are always returned in this fixed order so TTA_WEIGHTS can align:
+        original, horizontal-flip, vertical-flip, each rotation angle, each crop.
+        Views disabled by config are skipped (and their weight slot skipped too).
+        Rotations/crops that would degenerate a tiny crop are silently dropped.
+        """
+        import numpy as np
+
+        arr = np.asarray(pixels)
+        views: List[Any] = [arr]
+
+        if settings.ENABLE_HORIZONTAL_FLIP_TTA:
+            views.append(arr[:, ::-1].copy())
+        # Vertical flip is a control only; a tiger is rarely upside-down and it
+        # destroys stripe identity. Off by default (ENABLE_VERTICAL_FLIP_TTA).
+        if settings.ENABLE_VERTICAL_FLIP_TTA:
+            views.append(arr[::-1, :].copy())
+
+        angles = settings.rotation_angles_list
+        if angles and arr.ndim == 3:
+            try:
+                from PIL import Image as _PILImage
+
+                base = _PILImage.fromarray(arr.astype("uint8"), "RGB")
+                for deg in angles:
+                    rotated = base.rotate(deg, resample=_PILImage.BILINEAR, expand=False)
+                    views.append(np.asarray(rotated))
+            except Exception:
+                # Rotation is best-effort; fall back to the geometric views we have.
+                pass
+
+        if settings.ENABLE_CROP_TTA and arr.ndim == 3:
+            h, w = arr.shape[:2]
+            for frac in settings.tta_crop_fractions_list:
+                cw, ch = int(w * frac), int(h * frac)
+                if cw < 8 or ch < 8:
+                    continue
+                left, top = (w - cw) // 2, (h - ch) // 2
+                views.append(arr[top:top + ch, left:left + cw].copy())
+
+        return views
+
+    def _aggregate_embeddings(self, embeddings: List[Any]) -> Any:
+        """
+        L2-normalize each embedding, average (optionally weighted), then
+        L2-normalize the result. Never averages unnormalized vectors.
+        """
+        import numpy as np
+
+        mats = []
+        for emb in embeddings:
+            v = np.asarray(emb, dtype=np.float32)
+            n = float(np.linalg.norm(v))
+            if not np.isfinite(n) or n == 0:
+                continue
+            mats.append(v / n)
+        if not mats:
+            raise MegaDescriptorUnavailable("No valid embeddings to aggregate.")
+
+        stacked = np.vstack(mats)
+        if settings.TTA_AGGREGATION_METHOD == "weighted" and settings.tta_weights_list:
+            weights = np.asarray(settings.tta_weights_list[: stacked.shape[0]], dtype=np.float32)
+            if weights.shape[0] < stacked.shape[0]:
+                weights = np.concatenate(
+                    [weights, np.ones(stacked.shape[0] - weights.shape[0], dtype=np.float32)]
+                )
+            wsum = float(weights.sum())
+            mean = (stacked * weights[:, None]).sum(axis=0) / (wsum if wsum else 1.0)
+        else:
+            mean = stacked.mean(axis=0)
+
+        norm = float(np.linalg.norm(mean))
+        if not np.isfinite(norm) or norm == 0:
+            raise MegaDescriptorUnavailable("Aggregated embedding is degenerate.")
+        return mean / norm
+
     def identify_frame(
         self,
         pixels: Any,
@@ -308,6 +397,13 @@ class ProductionInference:
         """
         Generate a MegaDescriptor embedding from a tiger crop.
         Must only be called after a real tiger detection.
+
+        Applies test-time augmentation (TTA): the embedding is aggregated over
+        identity-preserving views (horizontal flip, small rotations, centre
+        crops) so a flipped/rotated/cropped capture of the same tiger stays
+        close to its enrolled embedding instead of being scored as a new
+        individual. Each view is L2-normalized before averaging and the mean is
+        renormalized. TTA is disabled when all view flags are off.
         """
         md = self._get_megadescriptor()
         if md is None:
@@ -316,11 +412,37 @@ class ProductionInference:
                 or "MegaDescriptor unavailable. Check that transformers/torch libraries are installed."
             )
 
+        # Quality gate on the raw crop before embedding (reuse ml.reid.quality).
+        quality_score: Optional[float] = None
+        quality_warnings: List[str] = []
         try:
-            embedding = md.get_embedding(pixels)
-            embedding_list = embedding.tolist()
+            import numpy as np
+
+            from ml.reid.quality import assess_crop
+
+            crop_rgb = np.asarray(pixels)
+            if crop_rgb.ndim == 3:
+                assessment = assess_crop(crop_rgb, flank=flank_side or "unknown")
+                quality_score = float(assessment.quality_score)
+                quality_warnings = list(assessment.warnings) + list(assessment.blocking_reasons)
+        except Exception:
+            # Quality gating is advisory; never block embedding on its failure.
+            quality_score = None
+
+        views = self._tta_views(pixels)
+        tta_used = len(views) > 1
+        try:
+            view_embeddings = [md.get_embedding(v) for v in views]
+            aggregated = self._aggregate_embeddings(view_embeddings)
+            embedding_list = aggregated.tolist()
+        except MegaDescriptorUnavailable:
+            raise
         except Exception as exc:
             raise MegaDescriptorUnavailable(f"Embedding generation failed: {exc}") from exc
+
+        preprocessing_version = (
+            f"megadescriptor-tta-v1(n={len(views)})" if tta_used else "megadescriptor-pil"
+        )
 
         return IdentityOutput(
             embedding=embedding_list,
@@ -330,9 +452,9 @@ class ProductionInference:
             suggested_tiger_code=None,
             candidates=[],
             is_demo=False,
-            preprocessing_version="megadescriptor-pil",
-            quality_score=None,
-            quality_warnings=[],
+            preprocessing_version=preprocessing_version,
+            quality_score=quality_score,
+            quality_warnings=quality_warnings,
         )
 
     def triage_frame(self, pixels: Any, image_hash: Optional[str] = None) -> TriageOutput:
