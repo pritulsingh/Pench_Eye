@@ -1,72 +1,99 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { MapContainer, Marker, Polyline, Popup, TileLayer, Tooltip } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { AlertCircle, ArrowLeft, Clock, ImageIcon } from 'lucide-react';
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from 'recharts';
 
-import { assetUrl, mapApi, tigersApi } from '@/api/client';
-import { useApi } from '@/hooks/useApi';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { Badge } from '@/components/ui/Badge';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import {
   SATELLITE_ATTRIBUTION,
   SATELLITE_TILES,
   cameraIcon,
   sightingIcon,
 } from '@/features/map/mapConfig';
-import { formatDate, formatDateTime, formatPercent, titleCase } from '@/lib/utils';
+import { useMonitoringStore } from '@/features/monitoring/MonitoringContext';
+import { nearbyTigers } from '@/features/monitoring/analysis';
+import { formatDateTime, titleCase } from '@/lib/utils';
 
-type Tab = 'gallery' | 'timeline' | 'movement';
+type Tab = 'gallery' | 'timeline' | 'movement' | 'conflict';
 
+const SEX_LABEL: Record<string, string> = {
+  male: '♂ Male',
+  female: '♀ Female',
+  unknown: 'Unknown',
+};
+
+/**
+ * Tiger Profile — derived entirely from the shared monitoring store so the
+ * identity image, gallery, detection history, movement path and conflict
+ * status always agree with the Reserve Map and every other view.
+ */
 export default function TigerProfile() {
   const { id } = useParams<{ id: string }>();
   const [tab, setTab] = useState<Tab>('gallery');
+  const { tigers, cameras, detections, territories, conflicts, overlaps, coDetections } =
+    useMonitoringStore();
 
-  const { data: tiger, loading, error, reload } = useApi(
-    () => tigersApi.get(id as string),
-    [id]
+  const tiger = useMemo(() => tigers.find((t) => t.id === id), [tigers, id]);
+
+  const tigerDetections = useMemo(
+    () =>
+      detections
+        .filter((d) => d.tigerId === id)
+        .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)),
+    [detections, id]
   );
-  const { data: gallery } = useApi(() => tigersApi.getGallery(id as string), [id]);
-  const { data: tracks } = useApi(() => mapApi.movement({ tiger_code: id }), [id]);
 
-  if (loading) {
-    return (
-      <div className="py-24">
-        <LoadingSpinner label="Loading profile…" />
-      </div>
-    );
-  }
+  const cameraById = useMemo(() => new Map(cameras.map((c) => [c.id, c])), [cameras]);
 
-  if (error || !tiger) {
+  const territory = useMemo(
+    () => territories.find((t) => t.tigerId === id),
+    [territories, id]
+  );
+
+  const nearby = useMemo(
+    () => (tiger ? nearbyTigers(tiger, tigers) : []),
+    [tiger, tigers]
+  );
+
+  const relatedConflicts = useMemo(
+    () => conflicts.filter((c) => c.tigerA === id || c.tigerB === id),
+    [conflicts, id]
+  );
+  const relatedOverlaps = useMemo(
+    () => overlaps.filter((o) => o.tigerA === id || o.tigerB === id),
+    [overlaps, id]
+  );
+  const relatedCoDetections = useMemo(
+    () => coDetections.filter((cd) => cd.tigerIds.includes(id as string)),
+    [coDetections, id]
+  );
+
+  if (!tiger) {
     return (
       <EmptyState
         icon={<AlertCircle />}
         title="Tiger not found"
-        description={error ?? `No individual matches ${id}.`}
+        description={`No individual matches ${id}.`}
         action={
-          <div className="flex gap-3">
-            <button className="btn-secondary" onClick={reload}>
-              Retry
-            </button>
-            <Link to="/tigers" className="btn-primary">
-              Back to catalog
-            </Link>
-          </div>
+          <Link to="/tigers" className="btn-primary">
+            Back to catalog
+          </Link>
         }
       />
     );
   }
 
-  const track = tracks?.[0];
-  const mapPoints = tiger.recent_observations.filter(
-    (o) => o.latitude !== null && o.longitude !== null
-  );
-  const center: [number, number] | null = mapPoints.length
-    ? [mapPoints[0].latitude as number, mapPoints[0].longitude as number]
-    : null;
+  const lastCamera = tiger.lastDetectedCamera ? cameraById.get(tiger.lastDetectedCamera) : undefined;
+  const center: [number, number] = tiger.currentLocation;
+
+  const movementCameras = Array.from(
+    new Set(tiger.movementHistory.map((m) => m.cameraId))
+  )
+    .map((cid) => cameraById.get(cid))
+    .filter(Boolean);
 
   return (
     <div className="space-y-6">
@@ -77,121 +104,114 @@ export default function TigerProfile() {
         <ArrowLeft className="w-4 h-4" /> Tiger catalog
       </Link>
 
-      <div className="card p-8 bg-gradient-to-br from-tiger-100 to-white border-tiger-500/20">
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-4xl font-bold">{tiger.tiger_id}</h1>
-              {tiger.is_demo && <Badge variant="demo">Demo profile</Badge>}
-            </div>
-            {tiger.name && <h2 className="text-xl text-tiger-700 mt-1">{tiger.name}</h2>}
-            <div className="flex flex-wrap gap-4 text-sm text-muted-foreground mt-4">
-              <StatusBadge status={tiger.status ?? 'unknown'} />
-              <span className="border-l border-border pl-4">
-                Sex: <strong className="text-foreground">{titleCase(tiger.sex)}</strong>
-              </span>
-              <span className="border-l border-border pl-4">
-                First detected: <strong className="text-foreground">{formatDate(tiger.first_seen)}</strong>
-              </span>
-              <span className="border-l border-border pl-4">
-                Last detected: <strong className="text-foreground">{formatDate(tiger.last_seen)}</strong>
-              </span>
-            </div>
-            {tiger.notes && (
-              <p className="text-xs text-muted-foreground mt-4 max-w-2xl">{tiger.notes}</p>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 min-w-[260px]">
-            {[
-              { label: 'Sightings', value: tiger.total_observations },
-              { label: 'Cameras', value: tiger.camera_count },
-              { label: 'Mean similarity', value: formatPercent(tiger.mean_confidence) },
-              { label: 'Distance tracked', value: `${track?.total_distance_km ?? 0} km` },
-            ].map((item) => (
-              <div key={item.label} className="bg-secondary/50 p-3 rounded-lg border border-border">
-                <div className="text-xl font-bold text-tiger-500">{item.value}</div>
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                  {item.label}
+      {/* Identity header */}
+      <div className="card p-6 bg-gradient-to-br from-tiger-100 to-white border-tiger-500/20">
+        <div className="flex flex-col md:flex-row gap-6">
+          <div className="w-full md:w-56 shrink-0">
+            <div className="rounded-xl overflow-hidden border border-border bg-secondary/40 h-56">
+              {tiger.referenceImage ? (
+                <img
+                  src={tiger.referenceImage}
+                  alt={`${tiger.id} reference`}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                  <ImageIcon />
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card p-6">
-          <h3 className="font-semibold mb-4">Frequently detected cameras</h3>
-          {tiger.frequent_cameras.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No camera detections recorded.</p>
-          ) : (
-            <ul className="space-y-3">
-              {tiger.frequent_cameras.map((cam) => {
-                const max = tiger.frequent_cameras[0].detections || 1;
-                return (
-                  <li key={cam.camera_id}>
-                    <div className="flex justify-between text-sm mb-1">
-                      <Link to={`/cameras/${cam.camera_id}`} className="hover:text-tiger-700">
-                        {cam.camera_id} — {cam.camera_name}
-                      </Link>
-                      <span className="font-medium">{cam.detections}</span>
-                    </div>
-                    <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-tiger-500"
-                        style={{ width: `${(cam.detections / max) * 100}%` }}
-                      />
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-
-          <h3 className="font-semibold mt-8 mb-3">Zone distribution</h3>
-          <div className="flex flex-wrap gap-2">
-            {tiger.zone_distribution.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No zone data.</p>
-            ) : (
-              tiger.zone_distribution.map((z) => (
-                <Badge key={z.label} variant="tiger">
-                  {titleCase(z.label)}: {z.count}
-                </Badge>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="card p-6">
-          <h3 className="font-semibold mb-4">Detections per month</h3>
-          {tiger.detections_by_month.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No detections recorded.</p>
-          ) : (
-            <div className="h-[260px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={tiger.detections_by_month}>
-                  <CartesianGrid stroke="hsl(136 18% 84%)" vertical={false} />
-                  <XAxis dataKey="label" stroke="hsl(140 9% 38%)" fontSize={11} tickLine={false} />
-                  <YAxis stroke="hsl(140 9% 38%)" fontSize={11} tickLine={false} allowDecimals={false} />
-                  <ChartTooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(0 0% 100%)',
-                      border: '1px solid hsl(136 18% 84%)',
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                  />
-                  <Bar dataKey="count" name="Detections" fill="hsl(145 55% 34%)" radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              )}
             </div>
-          )}
+          </div>
+
+          <div className="flex-1">
+            <div className="flex items-center gap-3">
+              <h1 className="text-4xl font-bold">{tiger.id}</h1>
+              <StatusBadge status={tiger.status} />
+              {relatedConflicts.length > 0 && <Badge variant="error">In conflict</Badge>}
+            </div>
+            <h2 className="text-xl text-tiger-700 mt-1">{tiger.name}</h2>
+
+            <div className="flex flex-wrap gap-4 text-sm text-muted-foreground mt-4">
+              <span>
+                Sex: <strong className="text-foreground">{SEX_LABEL[tiger.sex]}</strong>
+              </span>
+              <span className="border-l border-border pl-4">
+                Age: <strong className="text-foreground">{titleCase(tiger.ageClass)}</strong>
+              </span>
+              <span className="border-l border-border pl-4">
+                Territory: <strong className="text-foreground">{tiger.territoryId}</strong>
+                {territory && (
+                  <span className="text-foreground"> · ~{territory.areaLabelKm2} km²</span>
+                )}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+              {[
+                { label: 'Detections', value: tiger.detectionIds.length },
+                {
+                  label: 'Cameras',
+                  value: new Set(tiger.movementHistory.map((m) => m.cameraId)).size,
+                },
+                {
+                  label: 'Confidence',
+                  value: tiger.confidence != null ? `${Math.round(tiger.confidence * 100)}%` : '—',
+                },
+                { label: 'Nearby tigers', value: nearby.length },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  className="bg-secondary/50 p-3 rounded-lg border border-border"
+                >
+                  <div className="text-xl font-bold text-tiger-500">{item.value}</div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                    {item.label}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
+      {/* Current status */}
+      <div className="card p-6">
+        <h3 className="font-semibold mb-4">Current Status</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+          <div>
+            <div className="text-xs text-muted-foreground">Estimated location</div>
+            <div className="font-medium">
+              {center[0].toFixed(4)}, {center[1].toFixed(4)}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Last camera</div>
+            <div className="font-medium">
+              {lastCamera ? (
+                <Link to={`/cameras/${lastCamera.id}`} className="hover:text-tiger-700">
+                  {lastCamera.id} — {lastCamera.name}
+                </Link>
+              ) : (
+                '—'
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Last detection</div>
+            <div className="font-medium">
+              {tiger.lastDetectionTime ? formatDateTime(tiger.lastDetectionTime) : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Territory</div>
+            <div className="font-medium">{tiger.territoryId}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
       <div className="border-b border-border flex gap-6">
-        {(['gallery', 'timeline', 'movement'] as Tab[]).map((key) => (
+        {(['gallery', 'timeline', 'movement', 'conflict'] as Tab[]).map((key) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -208,63 +228,57 @@ export default function TigerProfile() {
       </div>
 
       {tab === 'gallery' && (
-        <div>
-          {(gallery?.length ?? 0) === 0 ? (
-            <EmptyState
-              icon={<ImageIcon />}
-              title="No images yet"
-              description="Frames appear here once detections for this individual are stored."
-            />
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {gallery?.map((img) => (
-                <figure key={img.image_id} className="card overflow-hidden group">
-                  <img
-                    src={assetUrl(img.url)}
-                    alt={`Capture ${img.image_id}`}
-                    loading="lazy"
-                    className="w-full h-44 object-cover bg-secondary/40 group-hover:scale-105 transition-transform"
-                  />
-                  <figcaption className="p-3 text-xs text-muted-foreground space-y-1">
-                    <div className="flex justify-between">
-                      <span>{formatDate(img.timestamp)}</span>
-                      <span>{img.camera_id}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>{titleCase(img.species)}</span>
-                      <span>{formatPercent(img.identity_confidence)}</span>
-                    </div>
-                  </figcaption>
-                </figure>
-              ))}
-            </div>
-          )}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {(tiger.gallery ?? []).map((src, i) => (
+            <figure key={src} className="card overflow-hidden group">
+              <img
+                src={src}
+                alt={`${tiger.id} image ${i + 1}`}
+                loading="lazy"
+                className="w-full h-44 object-cover bg-secondary/40 group-hover:scale-105 transition-transform"
+              />
+              <figcaption className="p-2 text-[11px] text-muted-foreground flex justify-between">
+                <span>{tiger.id}</span>
+                <span>{i === 0 ? 'Reference' : `Variant ${i}`}</span>
+              </figcaption>
+            </figure>
+          ))}
         </div>
       )}
 
       {tab === 'timeline' && (
         <div className="space-y-3 max-w-3xl">
-          {tiger.recent_observations.length === 0 ? (
+          {tigerDetections.length === 0 ? (
             <EmptyState
               icon={<Clock />}
-              title="No sightings yet"
-              description="Detections will be listed here chronologically."
+              title="No detections yet"
+              description="Detections appear here chronologically."
             />
           ) : (
-            tiger.recent_observations.map((obs) => (
-              <div key={obs.observation_id} className="flex gap-4 p-4 card items-center">
-                <div className="bg-tiger-500/10 p-3 rounded-full text-tiger-500">
-                  <Clock size={18} />
-                </div>
-                <div className="flex-1">
-                  <div className="font-medium">{formatDateTime(obs.timestamp)}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {obs.camera_id} — {obs.camera_name} • {titleCase(obs.zone)}
+            tigerDetections.map((det) => {
+              const cam = cameraById.get(det.cameraId);
+              return (
+                <div key={det.id} className="flex gap-4 p-4 card items-center">
+                  <img
+                    src={det.imagePath ?? tiger.referenceImage ?? ''}
+                    alt={`Detection ${det.id}`}
+                    loading="lazy"
+                    className="w-16 h-16 rounded-lg object-cover bg-secondary/40 shrink-0"
+                  />
+                  <div className="flex-1">
+                    <div className="font-medium">{formatDateTime(det.timestamp)}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {det.cameraId}
+                      {cam && ` — ${cam.name}`} · ~{det.estimatedDistanceFromCameraKm} km away
+                    </div>
+                  </div>
+                  <div className="text-right text-sm">
+                    <div className="font-medium">{Math.round(det.confidence * 100)}%</div>
+                    <div className="text-[11px] text-muted-foreground">{titleCase(det.source)}</div>
                   </div>
                 </div>
-                <div className="text-sm font-medium">{formatPercent(obs.identity_confidence)}</div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}
@@ -272,106 +286,129 @@ export default function TigerProfile() {
       {tab === 'movement' && (
         <div className="space-y-4">
           <div className="demo-banner">
-            Movement paths are straight-line links between consecutive camera detections, not
-            observed travel routes.
+            Estimated Movement Path — straight-line links between consecutive camera detections, not
+            observed travel routes or GPS tracking.
           </div>
-          {center ? (
           <div className="h-[480px] rounded-xl overflow-hidden border border-border relative z-0">
             <MapContainer
               center={center}
-              zoom={11}
+              zoom={12}
               style={{ height: '100%', width: '100%', background: '#f3f8f4' }}
             >
               <TileLayer url={SATELLITE_TILES} attribution={SATELLITE_ATTRIBUTION} />
 
-              {tiger.frequent_cameras
-                .filter((c) => c.latitude !== null && c.longitude !== null)
-                .map((cam) => (
-                  <Marker
-                    key={cam.camera_id}
-                    position={[cam.latitude as number, cam.longitude as number]}
-                    icon={cameraIcon('active')}
-                  >
-                    <Popup>
-                      <div className="text-xs text-slate-900">
-                        <strong>{cam.camera_id}</strong>
-                        <br />
-                        {cam.camera_name}
-                        <br />
-                        {cam.detections} detections
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
-
-              {mapPoints.map((obs) => (
+              {movementCameras.map((cam) => (
                 <Marker
-                  key={obs.observation_id}
-                  position={[obs.latitude as number, obs.longitude as number]}
-                  icon={sightingIcon(true)}
+                  key={cam!.id}
+                  position={[cam!.latitude, cam!.longitude]}
+                  icon={cameraIcon('active')}
                 >
                   <Popup>
                     <div className="text-xs text-slate-900">
-                      <strong>{formatDateTime(obs.timestamp)}</strong>
+                      <strong>{cam!.id}</strong>
                       <br />
-                      {obs.camera_id} — {obs.camera_name}
-                      <br />
-                      Identity: {formatPercent(obs.identity_confidence)}
+                      {cam!.name}
                     </div>
                   </Popup>
                 </Marker>
               ))}
 
-              {track?.legs.map((leg, i) =>
-                leg.from_latitude !== null &&
-                leg.from_longitude !== null &&
-                leg.to_latitude !== null &&
-                leg.to_longitude !== null ? (
-                  <Polyline
-                    key={i}
-                    positions={[
-                      [leg.from_latitude, leg.from_longitude],
-                      [leg.to_latitude, leg.to_longitude],
-                    ]}
-                    pathOptions={{ color: '#f59e0b', weight: 2 }}
-                  >
-                    <Tooltip sticky>
-                      <div className="text-xs">
-                        {leg.from_camera_id} → {leg.to_camera_id}
-                        <br />
-                        {leg.distance_km} km in {leg.hours_elapsed} h
-                      </div>
-                    </Tooltip>
-                  </Polyline>
-                ) : null
+              {tiger.movementHistory.map((m) => (
+                <Marker
+                  key={m.detectionId}
+                  position={[m.latitude, m.longitude]}
+                  icon={sightingIcon(true)}
+                >
+                  <Popup>
+                    <div className="text-xs text-slate-900">
+                      <strong>{formatDateTime(m.timestamp)}</strong>
+                      <br />
+                      {m.cameraId}
+                    </div>
+                  </Popup>
+                </Marker>
+              ))}
+
+              {tiger.movementHistory.length > 1 && (
+                <Polyline
+                  positions={tiger.movementHistory.map((m) => [m.latitude, m.longitude])}
+                  pathOptions={{ color: '#f59e0b', weight: 2 }}
+                >
+                  <Tooltip sticky>Estimated Movement Path</Tooltip>
+                </Polyline>
               )}
             </MapContainer>
           </div>
-          ) : (
-            <EmptyState
-              icon={<ImageIcon />}
-              title="No movement data"
-              description="No geolocated observations exist for this tiger."
-            />
-          )}
+        </div>
+      )}
 
-          {track && track.legs.length > 0 && (
-            <div className="card p-4">
-              <h3 className="font-semibold text-sm mb-3">Movement legs</h3>
-              <ol className="space-y-2 text-sm">
-                {track.legs.map((leg, i) => (
-                  <li key={i} className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                    <Badge>{leg.from_camera_id}</Badge>
-                    <span>→</span>
-                    <Badge>{leg.to_camera_id}</Badge>
-                    <span className="text-xs">
-                      {leg.distance_km} km • {leg.hours_elapsed} h • {formatDateTime(leg.to_timestamp)}
+      {tab === 'conflict' && (
+        <div className="space-y-4">
+          <div className="card p-6">
+            <h3 className="font-semibold mb-3">Nearby tigers (within conflict radius)</h3>
+            {nearby.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No tigers within the conflict radius.</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {nearby.map((n) => (
+                  <li key={n.id} className="flex items-center justify-between">
+                    <Link to={`/tigers/${n.id}`} className="hover:text-tiger-700 font-medium">
+                      {n.id} — {n.name}
+                    </Link>
+                    <Badge variant="error">{n.distanceKm} km</Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="card p-6">
+            <h3 className="font-semibold mb-3">Conflict / proximity events</h3>
+            {relatedConflicts.length === 0 &&
+            relatedOverlaps.length === 0 &&
+            relatedCoDetections.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No conflict events for this tiger.</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {relatedConflicts.map((c) => {
+                  const other = c.tigerA === id ? c.tigerB : c.tigerA;
+                  return (
+                    <li key={c.id} className="flex items-center gap-2">
+                      <Badge variant="error">Proximity</Badge>
+                      <span>
+                        {c.distanceKm} km from{' '}
+                        <Link to={`/tigers/${other}`} className="hover:text-tiger-700">
+                          {other}
+                        </Link>
+                      </span>
+                    </li>
+                  );
+                })}
+                {relatedOverlaps.map((o) => {
+                  const other = o.tigerA === id ? o.tigerB : o.tigerA;
+                  return (
+                    <li key={o.id} className="flex items-center gap-2">
+                      <Badge variant="warning">Territory overlap</Badge>
+                      <span>
+                        with{' '}
+                        <Link to={`/tigers/${other}`} className="hover:text-tiger-700">
+                          {other}
+                        </Link>
+                      </span>
+                    </li>
+                  );
+                })}
+                {relatedCoDetections.map((cd) => (
+                  <li key={cd.id} className="flex items-center gap-2">
+                    <Badge variant="review">Co-detection</Badge>
+                    <span>
+                      with {cd.tigerIds.filter((t) => t !== id).join(', ')} at {cd.cameraId}
                     </span>
                   </li>
                 ))}
-              </ol>
-            </div>
-          )}
+              </ul>
+            )}
+          </div>
         </div>
       )}
     </div>

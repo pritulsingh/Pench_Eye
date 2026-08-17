@@ -1,96 +1,85 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, BellRing, Check, RefreshCw } from 'lucide-react';
+import { AlertCircle, BellRing, Check, MapPin } from 'lucide-react';
 
-import { alertsApi } from '@/api/client';
-import { useApi } from '@/hooks/useApi';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { Badge } from '@/components/ui/Badge';
 import { SeverityBadge } from '@/components/ui/SeverityBadge';
 import { KpiCard } from '@/components/ui/KpiCard';
+import { useMonitoringStore } from '@/features/monitoring/MonitoringContext';
 import { formatDateTime, titleCase } from '@/lib/utils';
+import type { AlertSeverity } from '@/features/monitoring/types';
 
-const ALERT_TYPES = [
-  'high_priority_detection',
-  'camera_offline',
-  'unusual_movement',
-  'high_activity',
-  'low_confidence',
-];
+const ALERT_TYPE_LABEL: Record<string, string> = {
+  tiger_proximity: 'Tiger Proximity',
+  multiple_tiger_detection: 'Multiple Tiger Detection',
+  territory_overlap: 'Territory Overlap',
+  new_territory_movement: 'New Movement',
+  long_detection_gap: 'Long Detection Gap',
+  high_risk_conflict_zone: 'High-Risk Conflict Zone',
+};
 
+const SEVERITY_ORDER: Record<AlertSeverity, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+/**
+ * Alerts page.
+ *
+ * Derived entirely from the shared monitoring store. Proximity, overlap,
+ * co-detection, new-movement and detection-gap events are computed by the same
+ * conflict engine the map uses, so alerts always agree with the map, dashboard
+ * and tiger profiles. A new camera detection re-runs the engine and updates
+ * this page automatically.
+ */
 export default function Alerts() {
-  const [status, setStatus] = useState('open');
+  const { alerts } = useMonitoringStore();
   const [severity, setSeverity] = useState('');
   const [alertType, setAlertType] = useState('');
-  const [busy, setBusy] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
 
-  const { data: summary, reload: reloadSummary } = useApi(() => alertsApi.summary());
-  const { data, loading, error, reload } = useApi(
-    () =>
-      alertsApi.list({
-        limit: 100,
-        ...(status ? { status } : {}),
-        ...(severity ? { severity } : {}),
-        ...(alertType ? { alert_type: alertType } : {}),
-      }),
-    [status, severity, alertType]
+  const filtered = useMemo(() => {
+    return alerts
+      .filter((a) => {
+        if (severity && a.severity !== severity) return false;
+        if (alertType && a.type !== alertType) return false;
+        return true;
+      })
+      .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+  }, [alerts, severity, alertType]);
+
+  const summary = useMemo(() => {
+    const critical = alerts.filter((a) => a.severity === 'critical').length;
+    const high = alerts.filter((a) => a.severity === 'high').length;
+    const medium = alerts.filter((a) => a.severity === 'medium').length;
+    return { total: alerts.length, critical, high, medium };
+  }, [alerts]);
+
+  const alertTypes = useMemo(
+    () => Array.from(new Set(alerts.map((a) => a.type))),
+    [alerts]
   );
 
-  const alerts = data?.items ?? [];
-
-  const changeStatus = async (alertId: string, next: string) => {
-    setBusy(alertId);
-    setActionError(null);
-    try {
-      await alertsApi.updateStatus(alertId, next, 'control-room');
-      reload();
-      reloadSummary();
-    } catch (err) {
-      const e = err as { userMessage?: string };
-      setActionError(e.userMessage ?? 'Could not update the alert.');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const runRules = async () => {
-    setBusy('evaluate');
-    setActionError(null);
-    try {
-      await alertsApi.evaluate();
-      reload();
-      reloadSummary();
-    } catch (err) {
-      const e = err as { userMessage?: string };
-      setActionError(e.userMessage ?? 'Rule evaluation failed.');
-    } finally {
-      setBusy(null);
-    }
+  /** Deep-link an alert to the most relevant existing view. */
+  const alertLink = (tigerIds: string[], cameraId: string | null): string => {
+    if (tigerIds.length === 1) return `/tigers/${tigerIds[0]}`;
+    if (cameraId) return `/cameras/${cameraId}`;
+    return '/map';
   };
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <KpiCard title="Open" value={summary?.open ?? 0} icon={<BellRing />} />
-        <KpiCard title="Critical" value={summary?.critical ?? 0} icon={<AlertCircle />} />
-        <KpiCard title="Acknowledged" value={summary?.acknowledged ?? 0} icon={<Check />} />
-        <KpiCard title="Resolved" value={summary?.resolved ?? 0} icon={<Check />} />
+        <KpiCard title="Total alerts" value={summary.total} icon={<BellRing />} />
+        <KpiCard title="Critical" value={summary.critical} icon={<AlertCircle />} />
+        <KpiCard title="High" value={summary.high} icon={<AlertCircle />} />
+        <KpiCard title="Medium" value={summary.medium} icon={<Check />} />
       </div>
 
       <div className="card p-4 flex flex-wrap gap-3 items-center">
-        <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          aria-label="Filter by status"
-          className="filter-input"
-        >
-          <option value="">All statuses</option>
-          <option value="open">Open</option>
-          <option value="acknowledged">Acknowledged</option>
-          <option value="resolved">Resolved</option>
-        </select>
         <select
           value={severity}
           onChange={(e) => setSeverity(e.target.value)}
@@ -98,7 +87,7 @@ export default function Alerts() {
           className="filter-input"
         >
           <option value="">Any severity</option>
-          {['critical', 'high', 'medium', 'low', 'info'].map((s) => (
+          {(['critical', 'high', 'medium', 'low', 'info'] as const).map((s) => (
             <option key={s} value={s}>
               {titleCase(s)}
             </option>
@@ -111,115 +100,66 @@ export default function Alerts() {
           className="filter-input"
         >
           <option value="">All types</option>
-          {ALERT_TYPES.map((t) => (
+          {alertTypes.map((t) => (
             <option key={t} value={t}>
-              {titleCase(t)}
+              {ALERT_TYPE_LABEL[t] ?? titleCase(t)}
             </option>
           ))}
         </select>
-
-        <button
-          onClick={runRules}
-          disabled={busy === 'evaluate'}
-          className="btn-secondary ml-auto flex items-center gap-2"
-        >
-          <RefreshCw className={`w-4 h-4 ${busy === 'evaluate' ? 'animate-spin' : ''}`} />
-          Re-evaluate rules
-        </button>
+        <span className="ml-auto text-xs text-muted-foreground">
+          Live conflict-engine output · shared monitoring data
+        </span>
       </div>
 
-      {actionError && (
-        <div className="badge-error px-4 py-2 rounded-md text-sm">{actionError}</div>
-      )}
-
-      {loading ? (
-        <div className="py-20">
-          <LoadingSpinner label="Loading alerts…" />
-        </div>
-      ) : error ? (
-        <EmptyState
-          icon={<AlertCircle />}
-          title="Alerts unavailable"
-          description={error}
-          action={
-            <button className="btn-primary" onClick={reload}>
-              Retry
-            </button>
-          }
-        />
-      ) : alerts.length === 0 ? (
+      {filtered.length === 0 ? (
         <EmptyState
           icon={<Check />}
-          title="Nothing to action"
-          description="No alerts match the current filters."
+          title="No active alerts"
+          description="The conflict engine found no proximity, overlap or movement events."
         />
       ) : (
         <div className="space-y-3">
-          {alerts.map((alert) => (
-            <article key={alert.alert_id} className="card p-5">
+          {filtered.map((alert) => (
+            <article key={alert.id} className="card p-5">
               <div className="flex flex-wrap items-start gap-3">
                 <div className="flex-1 min-w-[240px]">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-semibold">{alert.title}</h3>
+                    <h3 className="font-semibold">
+                      {ALERT_TYPE_LABEL[alert.type] ?? titleCase(alert.type)}
+                    </h3>
                     <SeverityBadge severity={alert.severity} />
-                    <Badge
-                      variant={
-                        alert.status === 'open'
-                          ? 'warning'
-                          : alert.status === 'acknowledged'
-                          ? 'review'
-                          : 'success'
-                      }
-                    >
-                      {titleCase(alert.status)}
-                    </Badge>
-                    {alert.is_demo && <Badge variant="demo">Demo</Badge>}
+                    {alert.tigerIds.map((tid) => (
+                      <Link key={tid} to={`/tigers/${tid}`}>
+                        <Badge variant="tiger">{tid}</Badge>
+                      </Link>
+                    ))}
                   </div>
                   <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
                     {alert.message}
                   </p>
                   <div className="flex flex-wrap gap-3 mt-3 text-xs text-muted-foreground">
-                    <span>{titleCase(alert.alert_type)}</span>
-                    {alert.camera_id && (
-                      <Link to={`/cameras/${alert.camera_id}`} className="hover:text-tiger-700">
-                        {alert.camera_id}
+                    {alert.cameraId && (
+                      <Link to={`/cameras/${alert.cameraId}`} className="hover:text-tiger-700">
+                        {alert.cameraId}
                       </Link>
                     )}
-                    {alert.zone_code && <span>{alert.zone_code}</span>}
-                    <span>{formatDateTime(alert.created_at)}</span>
-                    {alert.acknowledged_by && <span>by {alert.acknowledged_by}</span>}
+                    {alert.distanceKm != null && <span>{alert.distanceKm} km</span>}
+                    {alert.location && (
+                      <span className="flex items-center gap-1">
+                        <MapPin className="w-3 h-3" />
+                        {alert.location[0].toFixed(3)}, {alert.location[1].toFixed(3)}
+                      </span>
+                    )}
+                    <span>{formatDateTime(alert.timestamp)}</span>
                   </div>
                 </div>
 
-                <div className="flex gap-2">
-                  {alert.status === 'open' && (
-                    <button
-                      className="btn-secondary"
-                      disabled={busy === alert.alert_id}
-                      onClick={() => changeStatus(alert.alert_id, 'acknowledged')}
-                    >
-                      Acknowledge
-                    </button>
-                  )}
-                  {alert.status !== 'resolved' && (
-                    <button
-                      className="btn-primary"
-                      disabled={busy === alert.alert_id}
-                      onClick={() => changeStatus(alert.alert_id, 'resolved')}
-                    >
-                      Resolve
-                    </button>
-                  )}
-                  {alert.status === 'resolved' && (
-                    <button
-                      className="btn-secondary"
-                      disabled={busy === alert.alert_id}
-                      onClick={() => changeStatus(alert.alert_id, 'open')}
-                    >
-                      Reopen
-                    </button>
-                  )}
-                </div>
+                <Link
+                  to={alertLink(alert.tigerIds, alert.cameraId)}
+                  className="btn-secondary self-center"
+                >
+                  Investigate
+                </Link>
               </div>
             </article>
           ))}

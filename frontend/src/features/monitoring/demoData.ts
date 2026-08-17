@@ -100,6 +100,41 @@ const RAW_TIGERS: RawTiger[] = [
 
 const cameraById = new Map(RAW_CAMERAS.map((c) => [c.id, c]));
 
+// ── Tiger image dataset ───────────────────────────────────────────────────
+// Reference + gallery images live in `public/tigers/tiger_XX/`, sourced from
+// the project's `implement/` folder. Tiger "T-04" maps to folder "tiger_04".
+// The same identity always reuses the same images (never mixed between tigers).
+const TIGER_IMAGE_VARIANTS = [
+  'original.png',
+  'crop90.png',
+  'crop80.png',
+  'crop70.png',
+  'bright_up.png',
+  'contrast_up.png',
+];
+
+function tigerImageDir(tigerId: string): string {
+  const num = tigerId.slice(2); // "T-04" → "04"
+  return `/tigers/tiger_${num}`;
+}
+
+function tigerGallery(tigerId: string): string[] {
+  const dir = tigerImageDir(tigerId);
+  return TIGER_IMAGE_VARIANTS.map((v) => `${dir}/${v}`);
+}
+
+/** Reference (identity) image for a tiger — the first gallery entry. */
+export function tigerReferenceImage(tigerId: string): string {
+  return `${tigerImageDir(tigerId)}/original.png`;
+}
+
+/** A deterministic "detection" image for a tiger, rotated by detection index. */
+export function tigerDetectionImage(tigerId: string, index: number): string {
+  const gallery = tigerGallery(tigerId);
+  return gallery[index % gallery.length];
+}
+
+
 function meanCenter(cameraIds: string[]): LatLng {
   const pts = cameraIds.map((id) => cameraById.get(id)!).filter(Boolean);
   const lat = pts.reduce((s, c) => s + c.lat, 0) / pts.length;
@@ -175,7 +210,7 @@ export function buildDemoData(now: number = Date.UTC(2026, 7, 17, 12, 0, 0)): {
         latitude: location[0],
         longitude: location[1],
         confidence,
-        imagePath: null,
+        imagePath: tigerDetectionImage(raw.id, d),
         source: 'simulated',
         estimatedDistanceFromCameraKm: Number(distanceKm.toFixed(3)),
       });
@@ -209,6 +244,8 @@ export function buildDemoData(now: number = Date.UTC(2026, 7, 17, 12, 0, 0)): {
       lastDetectedCamera: last.cameraId,
       lastDetectionTime: last.timestamp,
       confidence: detections.find((x) => x.id === last.detectionId)?.confidence ?? null,
+      referenceImage: tigerReferenceImage(raw.id),
+      gallery: tigerGallery(raw.id),
       movementHistory,
       detectionIds,
     });

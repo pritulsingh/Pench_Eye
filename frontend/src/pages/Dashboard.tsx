@@ -37,6 +37,17 @@ import { SeverityBadge } from '@/components/ui/SeverityBadge';
 import ReserveMap from '@/features/map/ReserveMap';
 const LiveActivity = React.lazy(() => import('@/components/ui/LiveActivity'))
 import { formatBytes, formatDateTime, formatPercent, relativeTime, titleCase } from '@/lib/utils';
+import { useMonitoringStore } from '@/features/monitoring/MonitoringContext';
+
+const ALERT_TYPE_LABEL: Record<string, string> = {
+  tiger_proximity: 'Tiger Proximity',
+  multiple_tiger_detection: 'Multiple Tiger Detection',
+  territory_overlap: 'Territory Overlap',
+  new_territory_movement: 'New Movement',
+  long_detection_gap: 'Long Detection Gap',
+  high_risk_conflict_zone: 'High-Risk Conflict Zone',
+};
+
 
 const CHART_TOOLTIP = {
   contentStyle: {
@@ -58,8 +69,33 @@ const HEALTH_COLORS: Record<string, string> = {
 
 export default function Dashboard() {
   const { data: stats, loading, error, reload } = useApi(() => dashboardApi.getStats());
+  // Shared monitoring store — the same source of truth the Reserve Map,
+  // Tiger Gallery, Detections and Alerts derive from.
+  const {
+    tigers,
+    alerts: monitoringAlerts,
+    conflicts,
+  } = useMonitoringStore();
+
+  const conflictTigerIds = React.useMemo(() => {
+    const s = new Set<string>();
+    conflicts.forEach((c) => {
+      s.add(c.tigerA);
+      s.add(c.tigerB);
+    });
+    return s;
+  }, [conflicts]);
+
+  const topAlerts = React.useMemo(
+    () =>
+      [...monitoringAlerts]
+        .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
+        .slice(0, 6),
+    [monitoringAlerts]
+  );
 
   if (error) {
+
     return (
       <EmptyState
         icon={<AlertCircle />}
@@ -156,10 +192,73 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Tiger Monitoring — the 12 tracked tigers, derived from the shared store */}
+      <div className="card overflow-hidden">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold">Tiger Monitoring</h3>
+            <p className="text-xs text-muted-foreground">
+              {tigers.length} tracked individuals — latest detection, territory and conflict status.
+            </p>
+          </div>
+          <Link to="/tigers" className="text-xs text-tiger-700 hover:underline">
+            Open catalog
+          </Link>
+        </div>
+        <div className="p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+          {tigers.map((t) => {
+            const inConflict = conflictTigerIds.has(t.id);
+            return (
+              <Link
+                key={t.id}
+                to={`/tigers/${t.id}`}
+                className="rounded-lg overflow-hidden border border-border hover:border-tiger-300 hover:shadow-sm transition-colors bg-card"
+              >
+                <div className="relative h-24 bg-secondary/40">
+                  {t.referenceImage ? (
+                    <img
+                      src={t.referenceImage}
+                      alt={t.id}
+                      loading="lazy"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                      <Cat className="w-6 h-6" />
+                    </div>
+                  )}
+                  <span className="absolute top-1 left-1">
+                    {inConflict ? (
+                      <Badge variant="error">conflict</Badge>
+                    ) : (
+                      <StatusBadge status={t.status} />
+                    )}
+                  </span>
+                </div>
+                <div className="p-2 space-y-0.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold">{t.id}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {t.detectionIds.length} det.
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground truncate">{t.name}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {t.lastDetectedCamera ?? '—'}
+                    {t.lastDetectionTime ? ` · ${relativeTime(t.lastDetectionTime)}` : ''}
+                  </div>
+                </div>
+              </Link>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="card p-6 lg:col-span-2">
           <div className="flex items-baseline justify-between mb-6">
             <h3 className="font-semibold">Detection Trend — last 14 days</h3>
+
             <span className="text-xs text-muted-foreground">detections vs blank frames</span>
           </div>
           <div className="h-[260px]">
@@ -397,31 +496,46 @@ export default function Dashboard() {
             </Link>
           </div>
           <div className="divide-y divide-border/60 max-h-[420px] overflow-y-auto">
-            {loading ? (
-              Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="p-4">
-                  <div className="h-4 bg-secondary/50 animate-pulse rounded w-full" />
-                </div>
-              ))
-            ) : (stats?.recent_alerts.length ?? 0) === 0 ? (
+            {topAlerts.length === 0 ? (
               <p className="p-6 text-sm text-muted-foreground">No active alerts.</p>
             ) : (
-              stats?.recent_alerts.map((alert) => (
-                <div key={alert.alert_id} className="p-4 space-y-1.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="text-sm font-medium leading-snug">{alert.title}</span>
-                    <SeverityBadge severity={alert.severity} />
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-relaxed">{alert.message}</p>
-                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <span>{titleCase(alert.alert_type)}</span>
-                    <span>•</span>
-                    <span>{formatDateTime(alert.created_at)}</span>
-                  </div>
-                </div>
-              ))
+              topAlerts.map((alert) => {
+                // Clicking an alert takes the user to the relevant view: a single
+                // tiger's profile, or the reserve map for spatial conflicts.
+                const target =
+                  alert.tigerIds.length === 1
+                    ? `/tigers/${alert.tigerIds[0]}`
+                    : '/map';
+                return (
+                  <Link
+                    key={alert.id}
+                    to={target}
+                    className="block p-4 space-y-1.5 hover:bg-secondary/40 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-sm font-medium leading-snug">
+                        {ALERT_TYPE_LABEL[alert.type] ?? titleCase(alert.type)}
+                      </span>
+                      <SeverityBadge severity={alert.severity} />
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">{alert.message}</p>
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {alert.tigerIds.length > 0 && <span>{alert.tigerIds.join(', ')}</span>}
+                      {alert.cameraId && (
+                        <>
+                          <span>•</span>
+                          <span>{alert.cameraId}</span>
+                        </>
+                      )}
+                      <span>•</span>
+                      <span>{formatDateTime(alert.timestamp)}</span>
+                    </div>
+                  </Link>
+                );
+              })
             )}
           </div>
+
         </div>
       </div>
 

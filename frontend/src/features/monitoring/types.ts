@@ -39,6 +39,7 @@ export interface TrackedTiger {
   lastDetectionTime: string | null;
   confidence: number | null;  // last detection confidence
   referenceImage?: string;
+  gallery?: string[];         // all associated images for this individual
   movementHistory: MovementPoint[];
   detectionIds: string[];
 }

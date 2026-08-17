@@ -1,5 +1,6 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import Layout from './components/layout/Layout'
+import { MonitoringProvider } from './features/monitoring/MonitoringContext'
 import Dashboard from './pages/Dashboard'
 import Triage from './pages/Triage'
 import Upload from './pages/Upload'
@@ -18,6 +19,7 @@ import NotFound from './pages/NotFound'
 export default function App() {
   return (
     <BrowserRouter>
+      <MonitoringProvider>
       <Routes>
         <Route
           path="/"
@@ -132,6 +134,7 @@ export default function App() {
           }
         />
       </Routes>
+      </MonitoringProvider>
     </BrowserRouter>
   )
 }

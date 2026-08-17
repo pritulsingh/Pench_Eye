@@ -1,14 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, Cat, Search } from 'lucide-react';
+import { Cat, Search } from 'lucide-react';
 
-import { tigersApi } from '@/api/client';
-import { useApi } from '@/hooks/useApi';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { Badge } from '@/components/ui/Badge';
-import { formatDate, formatPercent } from '@/lib/utils';
+import { useMonitoringStore } from '@/features/monitoring/MonitoringContext';
+import { formatDateTime, titleCase } from '@/lib/utils';
 
 const SEX_LABEL: Record<string, string> = {
   male: '♂ Male',
@@ -16,37 +14,38 @@ const SEX_LABEL: Record<string, string> = {
   unknown: 'Unknown',
 };
 
+/**
+ * Tiger Gallery / Catalog.
+ *
+ * Reads the 12 tracked tigers from the shared monitoring store — the SAME
+ * source of truth the Reserve Map uses — so their reference images (from the
+ * `implement/` dataset), latest detection, territory and conflict status are
+ * visible outside the map.
+ */
 export default function Tigers() {
+  const { tigers, conflicts } = useMonitoringStore();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [sex, setSex] = useState('');
 
-  const { data, loading, error, reload } = useApi(
-    () =>
-      tigersApi.list({
-        limit: 200,
-        ...(status ? { status } : {}),
-        ...(search ? { search } : {}),
-      }),
-    [status, search]
-  );
+  const conflictTigerIds = useMemo(() => {
+    const s = new Set<string>();
+    conflicts.forEach((c) => {
+      s.add(c.tigerA);
+      s.add(c.tigerB);
+    });
+    return s;
+  }, [conflicts]);
 
-  const tigers = (data?.items ?? []).filter((t) => (sex ? t.sex === sex : true));
-
-  if (error) {
-    return (
-      <EmptyState
-        icon={<AlertCircle />}
-        title="Tiger catalog unavailable"
-        description={error}
-        action={
-          <button className="btn-primary" onClick={reload}>
-            Retry
-          </button>
-        }
-      />
-    );
-  }
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return tigers.filter((t) => {
+      if (status && t.status !== status) return false;
+      if (sex && t.sex !== sex) return false;
+      if (q && !`${t.id} ${t.name}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [tigers, search, status, sex]);
 
   return (
     <div className="space-y-6">
@@ -72,7 +71,7 @@ export default function Tigers() {
             <option value="">All statuses</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
-            <option value="deceased">Deceased</option>
+            <option value="unknown">Unknown</option>
           </select>
           <select
             value={sex}
@@ -88,64 +87,100 @@ export default function Tigers() {
         </div>
       </div>
 
-      {loading ? (
-        <div className="py-20">
-          <LoadingSpinner label="Loading tigers…" />
-        </div>
-      ) : tigers.length === 0 ? (
+      {filtered.length === 0 ? (
         <EmptyState
           icon={<Cat />}
           title="No tigers found"
-          description="Try adjusting your search or filters, or ingest more camera-trap images."
+          description="Try adjusting your search or filters."
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {tigers.map((tiger) => (
-            <Link
-              key={tiger.id}
-              to={`/tigers/${tiger.tiger_id}`}
-              className="card p-5 hover:border-tiger-500/50 transition-all hover:-translate-y-0.5 block"
-            >
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3 className="font-bold text-lg text-foreground">{tiger.tiger_id}</h3>
-                  {tiger.name && <p className="text-sm text-tiger-700 font-medium">{tiger.name}</p>}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {filtered.map((tiger) => {
+            const inConflict = conflictTigerIds.has(tiger.id);
+            return (
+              <Link
+                key={tiger.id}
+                to={`/tigers/${tiger.id}`}
+                className="card overflow-hidden hover:border-tiger-500/50 transition-all hover:-translate-y-0.5 block"
+              >
+                <div className="relative h-40 bg-secondary/40">
+                  {tiger.referenceImage ? (
+                    <img
+                      src={tiger.referenceImage}
+                      alt={`${tiger.id} reference`}
+                      loading="lazy"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                      <Cat className="w-8 h-8" />
+                    </div>
+                  )}
+                  <div className="absolute top-2 left-2">
+                    <StatusBadge status={tiger.status} />
+                  </div>
+                  {inConflict && (
+                    <div className="absolute top-2 right-2">
+                      <Badge variant="error">Conflict</Badge>
+                    </div>
+                  )}
                 </div>
-                <StatusBadge status={tiger.status ?? 'unknown'} />
-              </div>
 
-              <dl className="space-y-2 text-sm text-muted-foreground">
-                <div className="flex justify-between">
-                  <dt>Sex</dt>
-                  <dd className="text-foreground">{SEX_LABEL[tiger.sex ?? 'unknown']}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt>Detections</dt>
-                  <dd className="text-foreground font-medium">{tiger.total_observations}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt>Cameras</dt>
-                  <dd className="text-foreground">{tiger.camera_count}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt>Mean confidence</dt>
-                  <dd className="text-foreground">{formatPercent(tiger.mean_confidence)}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt>Last seen</dt>
-                  <dd className="text-foreground">{formatDate(tiger.last_seen)}</dd>
-                </div>
-              </dl>
+                <div className="p-4 space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <h3 className="font-bold text-lg leading-tight">{tiger.id}</h3>
+                      <p className="text-sm text-tiger-700 font-medium">{tiger.name}</p>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {SEX_LABEL[tiger.sex]}
+                    </span>
+                  </div>
 
-              {tiger.is_demo && (
-                <div className="mt-4">
-                  <Badge variant="demo">Demo profile</Badge>
+                  <dl className="space-y-1.5 text-xs text-muted-foreground">
+                    <div className="flex justify-between">
+                      <dt>Last detected</dt>
+                      <dd className="text-foreground text-right">
+                        {tiger.lastDetectedCamera ?? '—'}
+                        {tiger.lastDetectionTime && (
+                          <>
+                            {' · '}
+                            {formatDateTime(tiger.lastDetectionTime)}
+                          </>
+                        )}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Territory</dt>
+                      <dd className="text-foreground">{tiger.territoryId}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Detections</dt>
+                      <dd className="text-foreground font-medium">{tiger.detectionIds.length}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Confidence</dt>
+                      <dd className="text-foreground">
+                        {tiger.confidence != null
+                          ? `${Math.round(tiger.confidence * 100)}%`
+                          : '—'}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <span className="btn-secondary w-full !py-1.5 text-xs text-center block">
+                    View Profile
+                  </span>
                 </div>
-              )}
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       )}
+
+      <p className="text-xs text-muted-foreground">
+        {filtered.length} of {tigers.length} tracked individuals · {titleCase('shared monitoring data')}.
+      </p>
     </div>
   );
 }

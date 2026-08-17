@@ -26,7 +26,7 @@ import { MONITORING_COLORS, RESERVE_BOUNDS, RESERVE_CENTER } from './config';
 import { cameraMarker, tigerMarker } from './markers';
 import { CameraUploadPanel } from './CameraUploadPanel';
 import { findCameraById, nearbyTigers } from './analysis';
-import { useMonitoring } from './useMonitoring';
+import { useMonitoringStore } from './MonitoringContext';
 import type { CameraTrap, Detection, TrackedTiger } from './types';
 import type { UploadResult } from './useMonitoring';
 
@@ -52,7 +52,7 @@ function MapFocus({ target }: { target: { center: [number, number]; zoom: number
 }
 
 export default function MonitoringMap() {
-  const store = useMonitoring();
+  const store = useMonitoringStore();
   const {
     cameras,
     tigers,
@@ -78,8 +78,36 @@ export default function MonitoringMap() {
   const [selectedTiger, setSelectedTiger] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ center: [number, number]; zoom: number } | null>(null);
   const [movementTiger, setMovementTiger] = useState<string | null>(null);
+  // Tiger filter: '' = show all. When set, that tiger becomes visually dominant
+  // and unrelated map objects are subdued (rather than removed).
+  const [tigerFilter, setTigerFilter] = useState<string>('');
+  // Conflict focus: emphasise conflict zones and subdue normal territory.
+  const [conflictFocus, setConflictFocus] = useState(false);
 
   const toggle = (k: LayerKey) => setLayers((p) => ({ ...p, [k]: !p[k] }));
+
+  /** Cameras that have detected the filtered tiger (for highlighting). */
+  const filterTigerCameras = useMemo(() => {
+    if (!tigerFilter) return new Set<string>();
+    return new Set(
+      cameras.filter((c) => c.detectedTigerIds.includes(tigerFilter)).map((c) => c.id)
+    );
+  }, [cameras, tigerFilter]);
+
+  const applyTigerFilter = (value: string) => {
+
+    setTigerFilter(value);
+    if (value) {
+      setSelectedTiger(value);
+      setMovementTiger(value);
+      setLayers((p) => ({ ...p, movement: true, tigers: true, territories: true }));
+      const t = tigerById.get(value);
+      if (t) setFocus({ center: t.currentLocation, zoom: 13 });
+    } else {
+      setMovementTiger(null);
+    }
+  };
+
 
   const tigerById = useMemo(() => new Map(tigers.map((t) => [t.id, t])), [tigers]);
   const territoryByTiger = useMemo(
@@ -94,6 +122,40 @@ export default function MonitoringMap() {
     });
     return s;
   }, [overlaps]);
+
+  /** Tigers/cameras involved in a proximity conflict (for the Conflict filter). */
+  const conflictTigerIds = useMemo(() => {
+    const s = new Set<string>();
+    conflicts.forEach((c) => {
+      s.add(c.tigerA);
+      s.add(c.tigerB);
+    });
+    return s;
+  }, [conflicts]);
+  const conflictCameraIds = useMemo(() => {
+    const s = new Set<string>();
+    conflicts.forEach((c) => c.nearbyCameraIds.forEach((id) => s.add(id)));
+    return s;
+  }, [conflicts]);
+
+  // Dimming helpers — when a filter is active, unrelated objects are subdued
+  // rather than removed so the map stays legible and the focus is obvious.
+  const dimTerritory = (tigerId: string) => {
+    if (tigerFilter && tigerId !== tigerFilter) return true;
+    if (conflictFocus && !conflictTigerIds.has(tigerId)) return true;
+    return false;
+  };
+  const dimTiger = (tigerId: string) => {
+    if (tigerFilter && tigerId !== tigerFilter) return true;
+    if (conflictFocus && !conflictTigerIds.has(tigerId)) return true;
+    return false;
+  };
+  const dimCamera = (cameraId: string) => {
+    if (tigerFilter && !filterTigerCameras.has(cameraId)) return true;
+    if (conflictFocus && !conflictCameraIds.has(cameraId)) return true;
+    return false;
+  };
+
 
   const activeTiger = selectedTiger ? tigerById.get(selectedTiger) : undefined;
   const activeCamera = selectedCamera ? findCameraById(cameras, selectedCamera) : undefined;
@@ -140,6 +202,53 @@ export default function MonitoringMap() {
         </div>
       </div>
 
+      {/* Focus controls: isolate a single tiger, or emphasise conflict zones. */}
+      <div className="card p-4 flex flex-wrap items-center gap-3">
+        <label className="text-sm font-medium text-muted-foreground">Tiger filter</label>
+        <select
+          value={tigerFilter}
+          onChange={(e) => applyTigerFilter(e.target.value)}
+          aria-label="Focus a single tiger"
+          className="filter-input"
+        >
+          <option value="">All Tigers</option>
+          {tigers.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.id} · {t.name}
+            </option>
+          ))}
+        </select>
+
+        <button
+          onClick={() => {
+            setConflictFocus((v) => !v);
+            setLayers((p) => ({ ...p, conflicts: true }));
+          }}
+          aria-pressed={conflictFocus}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+            conflictFocus
+              ? 'bg-red-100 border-red-300 text-red-800'
+              : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Conflict focus
+        </button>
+
+        {(tigerFilter || conflictFocus) && (
+          <button
+            onClick={() => {
+              setTigerFilter('');
+              setConflictFocus(false);
+              setMovementTiger(null);
+            }}
+            className="text-xs text-tiger-700 hover:underline"
+          >
+            Reset focus
+          </button>
+        )}
+      </div>
+
+
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
         <div className="xl:col-span-3 h-[640px] rounded-xl overflow-hidden border border-border relative z-0">
           <MapContainer
@@ -164,19 +273,25 @@ export default function MonitoringMap() {
             {layers.territories &&
               territories.map((terr) => {
                 const overlapping = overlapTigerIds.has(terr.tigerId);
+                const dimmed = dimTerritory(terr.tigerId);
+                const emphasised =
+                  (tigerFilter && terr.tigerId === tigerFilter) ||
+                  (conflictFocus && conflictTigerIds.has(terr.tigerId));
                 return (
                   <Polygon
                     key={terr.id}
                     positions={terr.ring}
                     pathOptions={{
                       color: overlapping ? MONITORING_COLORS.overlap : MONITORING_COLORS.territoryBorder,
-                      weight: overlapping ? 2 : 1.5,
+                      weight: emphasised ? 3 : overlapping ? 2 : 1.5,
                       fillColor: overlapping ? MONITORING_COLORS.overlap : MONITORING_COLORS.territoryFill,
-                      fillOpacity: 0.1,
+                      fillOpacity: dimmed ? 0.02 : emphasised ? 0.18 : 0.1,
+                      opacity: dimmed ? 0.25 : 1,
                       dashArray: overlapping ? '4 4' : undefined,
                     }}
                     eventHandlers={{ click: () => setSelectedTiger(terr.tigerId) }}
                   >
+
                     <Tooltip sticky>
                       <div className="text-xs">
                         <strong>{terr.tigerId}</strong> territory
@@ -282,7 +397,8 @@ export default function MonitoringMap() {
                 <Marker
                   key={t.id}
                   position={t.currentLocation}
-                  icon={tigerMarker(t, t.id === selectedTiger)}
+                  icon={tigerMarker(t, t.id === selectedTiger || t.id === tigerFilter)}
+                  opacity={dimTiger(t.id) ? 0.3 : 1}
                   eventHandlers={{ click: () => setSelectedTiger(t.id) }}
                 >
                   <Tooltip direction="top">
@@ -300,8 +416,10 @@ export default function MonitoringMap() {
                   key={c.id}
                   position={[c.latitude, c.longitude]}
                   icon={cameraMarker(c, c.id === selectedCamera)}
+                  opacity={dimCamera(c.id) ? 0.35 : 1}
                   eventHandlers={{ click: () => setSelectedCamera(c.id) }}
                 >
+
                   <Popup>
                     <CameraPopup
                       camera={c}
