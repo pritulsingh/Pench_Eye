@@ -1,5 +1,5 @@
-import PenchMap from '@/features/map/PenchMap';
+import MonitoringMap from '@/features/monitoring/MonitoringMap';
 
 export default function MapView() {
-  return <PenchMap />;
+  return <MonitoringMap />;
 }

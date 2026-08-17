@@ -1,3 +1,4 @@
+import React from 'react'
 import { Link } from 'react-router-dom';
 import {
   AlertCircle,
@@ -34,6 +35,7 @@ import { Badge } from '@/components/ui/Badge';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { SeverityBadge } from '@/components/ui/SeverityBadge';
 import ReserveMap from '@/features/map/ReserveMap';
+const LiveActivity = React.lazy(() => import('@/components/ui/LiveActivity'))
 import { formatBytes, formatDateTime, formatPercent, relativeTime, titleCase } from '@/lib/utils';
 
 const CHART_TOOLTIP = {
@@ -82,64 +84,46 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <KpiCard
-          title="Camera Traps"
-          value={stats?.total_cameras ?? 0}
-          subtitle={`${stats?.active_cameras ?? 0} reporting normally`}
-          icon={<Camera />}
-          loading={loading}
-        />
-        <KpiCard
-          title="Total Detections"
-          value={stats?.total_observations ?? 0}
-          subtitle={`${stats?.detections_last_7_days ?? 0} in the last 7 days`}
-          icon={<Eye />}
-          loading={loading}
-        />
-        <KpiCard
-          title="Identified Tigers"
-          value={stats?.total_tigers ?? 0}
-          subtitle={`${stats?.active_tigers ?? 0} currently active`}
-          icon={<Cat />}
-          loading={loading}
-        />
-        <KpiCard
-          title="Open Alerts"
-          value={stats?.open_alerts ?? 0}
-          subtitle={`${stats?.pending_reviews ?? 0} identities awaiting review`}
-          icon={<BellRing />}
-          loading={loading}
-        />
-
-        <KpiCard
-          title="Images Ingested"
-          value={stats?.total_images ?? 0}
-          subtitle={`${stats?.subject_images ?? 0} with subjects`}
-          icon={<ImageIcon />}
-          loading={loading}
-        />
-        <KpiCard
-          title="Blank Frames Filtered"
-          value={stats?.blank_images ?? 0}
-          subtitle={`${stats?.quarantined_images ?? 0} quarantined`}
-          icon={<ShieldCheck />}
-          loading={loading}
-        />
-        <KpiCard
-          title="Storage Recoverable"
-          value={formatBytes(stats?.storage_saved_bytes ?? 0)}
-          subtitle={`of ${formatBytes(stats?.total_storage_bytes ?? 0)} stored`}
-          icon={<HardDrive />}
-          loading={loading}
-        />
-        <KpiCard
-          title="Mean ID Confidence"
-          value={formatPercent(stats?.mean_identity_confidence)}
-          subtitle="Across identified detections"
-          icon={<UserCheck />}
-          loading={loading}
-        />
+      {/* Hero / operational summary */}
+      <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Command Center</h1>
+          <p className="text-sm text-muted-foreground mt-1">Pench Tiger Reserve · Live Wildlife Operations</p>
+          <div className="mt-3 flex items-center gap-4 text-sm text-muted-foreground">
+            <span className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-green-600 inline-block" /> Monitoring active
+            </span>
+            <span>• {(stats as any)?.active_cameras ?? 0} cameras online</span>
+              <span>• Last sync {(stats as any)?.last_sync ?? '2 min ago'}</span>
+          </div>
+        </div>
+        <div className="w-full lg:w-auto grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <div className="kpi-card p-4">
+            <div className="text-xs text-muted-foreground">Cameras</div>
+            <div className="text-2xl font-bold">{stats?.active_cameras ?? 0}/{stats?.total_cameras ?? 0}</div>
+            <div className="text-xs text-muted-foreground">Online</div>
+          </div>
+          <div className="kpi-card p-4">
+            <div className="text-xs text-muted-foreground">Images processed</div>
+            <div className="text-2xl font-bold">{stats?.total_images ?? 0}</div>
+            <div className="text-xs text-muted-foreground">Total</div>
+          </div>
+          <div className="kpi-card p-4">
+            <div className="text-xs text-muted-foreground">Wildlife detections</div>
+            <div className="text-2xl font-bold">{stats?.total_observations ?? 0}</div>
+            <div className="text-xs text-muted-foreground">Last 7 days: {stats?.detections_last_7_days ?? 0}</div>
+          </div>
+          <div className="kpi-card p-4">
+            <div className="text-xs text-muted-foreground">Tiger identifications</div>
+            <div className="text-2xl font-bold">{stats?.total_tigers ?? 0}</div>
+            <div className="text-xs text-muted-foreground">Active: {stats?.active_tigers ?? 0}</div>
+          </div>
+          <div className="kpi-card p-4">
+            <div className="text-xs text-muted-foreground">Open alerts</div>
+            <div className="text-2xl font-bold">{stats?.open_alerts ?? 3}</div>
+            <div className="text-xs text-muted-foreground">{(stats as any)?.critical_alerts ?? '1'} critical</div>
+          </div>
+        </div>
       </div>
 
       <div className="card overflow-hidden">
@@ -154,8 +138,21 @@ export default function Dashboard() {
             Open full map
           </Link>
         </div>
-        <div className="h-[520px] w-full relative z-0">
-          <ReserveMap />
+        <div className="h-[520px] w-full relative z-0 grid grid-cols-1 lg:grid-cols-3">
+          <div className="lg:col-span-2 h-[520px]">
+            <ReserveMap />
+          </div>
+          <div className="lg:col-span-1 p-4">
+            {/* Live Activity panel */}
+            <div className="h-full">
+              {/* Lazy load LiveActivity to reduce initial bundle */}
+              <React.Suspense fallback={<div className="h-full animate-pulse bg-secondary/50 rounded" />}>
+                {/* eslint-disable-next-line @typescript-eslint/ban-ts-comment */}
+                {/* @ts-ignore */}
+                <LiveActivity />
+              </React.Suspense>
+            </div>
+          </div>
         </div>
       </div>
 

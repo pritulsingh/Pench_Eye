@@ -217,3 +217,26 @@
 .leaflet-tooltip {
   border-radius: 8px;
 }
+
+/* ── Monitoring: dynamic conflict / proximity label ─────────────────── */
+.pench-conflict-label {
+  background: hsl(0 72% 51% / 0.92);
+  color: #fff;
+  border: 0;
+  border-radius: 9999px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  box-shadow: 0 1px 3px hsl(0 0% 0% / 0.35);
+  white-space: nowrap;
+}
+.pench-conflict-label::before {
+  display: none;
+}
+
+.pench-tiger-marker,
+.pench-camera-marker {
+  background: transparent;
+  border: 0;
+}
+
