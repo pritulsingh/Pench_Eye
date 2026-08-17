@@ -228,13 +228,21 @@ class ProductionInference:
             self._classifier = None
             self._classifier_error = str(exc)
         try:
-            from ml.detection.tiger_detector import TigerDetector
-            # Only instantiate the production detector when an explicit
-            # weights override is provided. This prevents silently loading a
-            # repository-default weights file during unit tests or CI where
-            # the operator did not opt-in to real detection.
-            if settings.TIGER_YOLO_WEIGHTS:
-                model_path = settings.TIGER_YOLO_WEIGHTS
+            from ml.detection.tiger_detector import TigerDetector, default_tiger_yolo_path
+
+            # Resolve the weights path: an explicit TIGER_YOLO_WEIGHTS override
+            # wins; otherwise fall back to the repository-default weights file
+            # (ml/weights/tiger_yolo.pt) when it actually exists on disk. This
+            # lets a deployment that ships the default weights run real
+            # detection without needing to set the env var, while CI/unit-test
+            # environments that lack the file still stay fail-closed.
+            model_path = settings.TIGER_YOLO_WEIGHTS or None
+            if model_path is None:
+                default_path = default_tiger_yolo_path()
+                if default_path.exists():
+                    model_path = str(default_path)
+
+            if model_path:
                 self._detector = TigerDetector(
                     ml_mode="production",
                     model_path=model_path,
@@ -251,6 +259,7 @@ class ProductionInference:
         except Exception as exc:
             self._detector = None
             self._detector_error = str(exc)
+
 
     def _get_megadescriptor(self):
         """Lazily load the MegaDescriptor model."""
