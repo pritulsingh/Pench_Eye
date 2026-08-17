@@ -1,0 +1,22 @@
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+scipy>=1.11.0
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0
+imagehash>=4.3.1
+uvicorn>=0.52.3
+
+# MegaDescriptor (MVP tiger re-ID)
+transformers>=4.30.0
+huggingface-hub>=0.16.0
+
+# Re-ID training / evaluation
+# Optional: Parquet export in ml/reid/extract_embeddings.py
+# (extract_embeddings falls back to JSONL when absent)
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# Optional: OSNet backbone (--backbone osnet_x1_0)
+# torchreid>=1.4.0

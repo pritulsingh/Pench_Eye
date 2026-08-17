@@ -1,0 +1,77 @@
+# Python: 3.14.2
+# Platform: Windows x86-64
+#
+# This requirements file is intended to use prebuilt wheels
+# wherever possible and avoid source compilation.
+
+# ============================================================
+# Web framework
+# ============================================================
+fastapi==0.139.2
+uvicorn[standard]==0.38.0
+python-multipart==0.0.20
+
+# ============================================================
+# Database
+# ============================================================
+sqlalchemy[asyncio]==2.0.43
+alembic==1.16.5
+asyncpg==0.31.0
+psycopg2-binary==2.9.12
+pgvector==0.4.1
+# SQLite fallback so the API runs without PostgreSQL
+aiosqlite==0.21.0
+
+# ============================================================
+# Pydantic
+# ============================================================
+pydantic==2.12.5
+pydantic-settings==2.14.2
+
+# ============================================================
+# Object storage
+# ============================================================
+boto3==1.42.43
+botocore==1.42.43
+
+# ============================================================
+# Image processing
+# ============================================================
+Pillow==12.0.0
+opencv-python-headless==4.13.0.92
+numpy==2.3.2
+scipy==1.18.0
+imagehash==4.3.2
+
+# ============================================================
+# ML - CPU
+# ============================================================
+torch==2.13.0
+torchvision==0.28.0
+
+# MegaDescriptor (MVP tiger re-ID)
+transformers>=4.30.0
+huggingface-hub>=0.16.0
+
+# ============================================================
+# Re-ID training / evaluation artifacts
+# (pandas + pyarrow only needed for Parquet embedding export;
+#  extract_embeddings falls back to JSONL without them)
+# ============================================================
+pandas==3.0.5
+pyarrow==25.0.1
+
+# ============================================================
+# Utilities
+# ============================================================
+python-dotenv==1.2.1
+httpx==0.28.1
+aiofiles==24.1.0
+structlog==25.5.0
+rich==14.1.0
+
+# ============================================================
+# Testing
+# ============================================================
+pytest==8.4.2
+pytest-asyncio==1.2.0

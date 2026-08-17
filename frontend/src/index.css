@@ -1,0 +1,219 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 132 33% 97%;
+    --foreground: 140 18% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 140 18% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 140 18% 9%;
+    --primary: 145 55% 31%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 133 30% 92%;
+    --secondary-foreground: 142 24% 18%;
+    --muted: 132 22% 94%;
+    --muted-foreground: 140 9% 38%;
+    --accent: 145 55% 31%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 136 18% 84%;
+    --input: 136 18% 80%;
+    --ring: 145 55% 31%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    background-image: linear-gradient(180deg, hsl(132 38% 96%) 0%, hsl(0 0% 100%) 38%, hsl(132 30% 97%) 100%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight;
+  }
+  
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-muted;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-card border border-border rounded-lg;
+    background-image: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(132 30% 98%) 100%);
+  }
+  
+  .kpi-card {
+    @apply card p-6 hover:border-tiger-600/40 transition-all duration-300;
+    box-shadow: 0 1px 3px hsl(140 20% 10% / 0.08);
+  }
+  
+  .btn-primary {
+    @apply bg-tiger-500 hover:bg-tiger-600 text-white font-medium px-4 py-2 rounded-md transition-all duration-200 text-sm;
+    box-shadow: 0 1px 2px hsl(140 20% 10% / 0.15);
+  }
+  
+  .btn-secondary {
+    @apply bg-secondary hover:bg-secondary/80 text-secondary-foreground font-medium px-4 py-2 rounded-md transition-all duration-200 text-sm border border-border;
+  }
+  
+  .btn-danger {
+    @apply bg-destructive hover:bg-destructive/90 text-destructive-foreground font-medium px-4 py-2 rounded-md transition-all duration-200 text-sm;
+  }
+  
+  .badge {
+    @apply inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full;
+  }
+  
+  .badge-tiger {
+    @apply badge bg-tiger-100 text-tiger-700 border border-tiger-500/20;
+  }
+  
+  .badge-demo {
+    @apply badge bg-amber-50 text-amber-800 border border-amber-200;
+  }
+  
+  .badge-success {
+    @apply badge bg-green-50 text-green-800 border border-green-200;
+  }
+  
+  .badge-warning {
+    @apply badge bg-yellow-50 text-yellow-800 border border-yellow-200;
+  }
+  
+  .badge-error {
+    @apply badge bg-red-50 text-red-800 border border-red-200;
+  }
+  
+  .nav-link {
+    @apply flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-all duration-200;
+  }
+  
+  .nav-link.active {
+    @apply text-tiger-800 bg-tiger-100 border-l-2 border-tiger-600;
+    margin-left: -1px;
+    padding-left: 11px;
+  }
+  
+  .demo-banner {
+    @apply flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-md text-amber-800 text-xs font-medium;
+  }
+  
+  .data-table {
+    @apply w-full text-sm;
+  }
+  
+  .data-table th {
+    @apply px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider border-b border-border;
+  }
+  
+  .data-table td {
+    @apply px-4 py-3 border-b border-border/50;
+  }
+  
+  .data-table tr:hover td {
+    @apply bg-secondary/30;
+  }
+
+  .filter-input {
+    @apply bg-secondary/50 border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-tiger-500;
+  }
+
+  .section-title {
+    @apply text-sm font-semibold uppercase tracking-wider text-muted-foreground;
+  }
+}
+
+/* ── Leaflet map markers ────────────────────────────────────────────── */
+.pench-marker {
+  background: transparent;
+  border: 0;
+}
+
+.pench-camera-dot,
+.pench-sighting,
+.pench-gate {
+  display: block;
+  box-sizing: border-box;
+}
+
+.pench-camera-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: var(--marker-color);
+  border: 1.5px solid hsl(30 15% 8% / 0.9);
+  box-shadow: 0 0 0 1.5px var(--marker-color), 0 0 5px hsl(0 0% 0% / 0.6);
+}
+
+.pench-pulse {
+  animation: pench-marker-pulse 1.8s ease-out infinite;
+}
+
+.pench-sighting {
+  background: var(--marker-color);
+  border: 1px solid hsl(30 15% 8% / 0.9);
+  border-radius: 9999px;
+}
+
+.pench-sighting-tiger {
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+
+.pench-sighting-active {
+  box-shadow: 0 0 0 3px hsl(32 88% 52% / 0.45);
+}
+
+.pench-gate {
+  width: 12px;
+  height: 12px;
+  background: #e2e8f0;
+  border: 2px solid #0f172a;
+  transform: rotate(45deg);
+}
+
+@keyframes pench-marker-pulse {
+  0% {
+    box-shadow: 0 0 0 1.5px var(--marker-color), 0 0 0 0 hsl(24 95% 53% / 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 1.5px var(--marker-color), 0 0 0 10px hsl(24 95% 53% / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 1.5px var(--marker-color), 0 0 0 0 hsl(24 95% 53% / 0);
+  }
+}
+
+.leaflet-container {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-tooltip {
+  border-radius: 8px;
+}
