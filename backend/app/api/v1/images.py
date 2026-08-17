@@ -27,12 +27,13 @@ router = APIRouter()
 async def upload_image(
     file: UploadFile = File(...),
     camera_id: Optional[str] = Form(None),
+    captured_at: Optional[datetime] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     content = await file.read()
     try:
         result = await PipelineService.process_image(
-            db, content=content, filename=file.filename, camera_id=camera_id
+            db, content=content, filename=file.filename, camera_id=camera_id, captured_at=captured_at
         )
     except ImageValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
